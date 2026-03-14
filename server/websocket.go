@@ -1,6 +1,7 @@
 package server
 
 import (
+	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -18,43 +19,82 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-// ServeWs upgrades the HTTP connection to WebSocket, performs the join
-// handshake, replays recent history, then hands the connection off to the hub.
+// ServeWs upgrades the HTTP connection to WebSocket.
 //
-// The client must send a join message as its very first frame:
+// Authentication:
 //
-//	{"type":"join","room":"room_name","user":"username"}
+//	ws://localhost:8080/ws?token=SESSION_TOKEN
+//
+// The token must have been obtained via POST /login. The connection is
+// rejected with 401 if the token is missing or unknown.
+//
+// Join frame (client → server, sent after upgrade):
+//
+//	{"type":"join","room":"general"}
+//
+// The "user" field in the join frame is ignored; identity comes from the
+// session resolved by the token.
 func ServeWs(hub *Hub, store *storage.MessageStore, w http.ResponseWriter, r *http.Request) {
+	// --- Authenticate before upgrading ---
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		http.Error(w, "missing token", http.StatusUnauthorized)
+		return
+	}
+
+	sess, err := store.GetSession(token)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "invalid token", http.StatusUnauthorized)
+		} else {
+			log.Printf("GetSession error: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	// --- Upgrade ---
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("upgrade error: %v", err)
 		return
 	}
 
-	// Give the client a short window to send the join frame.
+	// --- Read join frame ---
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-
 	_, raw, err := conn.ReadMessage()
 	if err != nil {
 		log.Printf("join read error: %v", err)
 		conn.Close()
 		return
 	}
-
-	// Reset the deadline; ReadPump will set its own.
 	conn.SetReadDeadline(time.Time{})
 
 	var join models.Message
-	if err := json.Unmarshal(raw, &join); err != nil || join.Type != "join" || join.Room == "" || join.User == "" {
+	if err := json.Unmarshal(raw, &join); err != nil || join.Type != "join" || join.Room == "" {
 		log.Printf("invalid join message from %s", r.RemoteAddr)
 		conn.WriteMessage(websocket.CloseMessage,
-			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "first message must be a valid join"))
+			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "first message must be {type:join, room:...}"))
 		conn.Close()
 		return
 	}
 
-	// Replay the last 50 messages before the client enters live message flow.
-	history, err := store.GetRecentMessages(join.Room, 50)
+	// --- Resolve chat ---
+	chatID, err := store.CreateChat(join.Room, "group")
+	if err != nil {
+		log.Printf("CreateChat error: %v", err)
+		conn.Close()
+		return
+	}
+
+	if err := store.AddUserToChat(chatID, sess.UserID); err != nil {
+		log.Printf("AddUserToChat error: %v", err)
+		conn.Close()
+		return
+	}
+
+	// --- Replay history ---
+	history, err := store.GetRecentMessages(chatID, 50)
 	if err != nil {
 		log.Printf("history load error: %v", err)
 	}
@@ -66,13 +106,18 @@ func ServeWs(hub *Hub, store *storage.MessageStore, w http.ResponseWriter, r *ht
 		}
 	}
 
+	// --- Register client ---
+	// Identity comes exclusively from the validated session; the join frame's
+	// "user" field is deliberately ignored.
 	client := &Client{
-		hub:      hub,
-		username: join.User,
+		username: sess.Username,
 		conn:     conn,
 		send:     make(chan models.Message, 256),
 	}
-	hub.Register <- JoinRequest{Client: client, RoomID: join.Room}
+
+	roomCh := make(chan *ChatRoom, 1)
+	hub.Register <- JoinRequest{Client: client, ChatID: chatID, UserID: sess.UserID, roomCh: roomCh}
+	client.room = <-roomCh
 
 	go client.WritePump()
 	go client.ReadPump()

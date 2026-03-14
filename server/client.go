@@ -16,10 +16,11 @@ const (
 	maxMessageSize = 512
 )
 
-// Client is a middleman between the WebSocket connection and the hub.
+// Client is a middleman between the WebSocket connection and its ChatRoom.
 type Client struct {
-	hub      *Hub
-	roomID   string
+	room     *ChatRoom // set after the JoinRequest is processed
+	chatID   int64
+	userID   int64
 	username string
 	conn     *websocket.Conn
 
@@ -27,11 +28,13 @@ type Client struct {
 	send chan models.Message
 }
 
-// ReadPump pumps messages from the WebSocket connection to the hub.
-// Each connection runs its own ReadPump in a goroutine.
+// ReadPump pumps messages from the WebSocket connection to the room.
 func (c *Client) ReadPump() {
 	defer func() {
-		c.hub.Unregister <- c
+		// Route unregister to the room, not the hub.
+		if c.room != nil {
+			c.room.unregister <- c
+		}
 		c.conn.Close()
 	}()
 
@@ -57,15 +60,18 @@ func (c *Client) ReadPump() {
 			continue
 		}
 
-		// Enforce room and username so clients cannot spoof either field.
-		msg.Room = c.roomID
+		// Enforce identity fields so clients cannot spoof them.
+		msg.ChatID = c.chatID
+		msg.UserID = c.userID
 		msg.User = c.username
-		c.hub.Broadcast <- msg
+
+		if c.room != nil {
+			c.room.broadcast <- msg
+		}
 	}
 }
 
-// WritePump pumps messages from the hub to the WebSocket connection.
-// Each connection runs its own WritePump in a goroutine.
+// WritePump pumps messages from the room to the WebSocket connection.
 func (c *Client) WritePump() {
 	ticker := time.NewTicker(pingPeriod)
 	defer func() {

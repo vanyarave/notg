@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chat Test</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, sans-serif;
+      background: #f0f2f5;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+    }
+
+    #app {
+      width: 480px;
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 4px 24px rgba(0,0,0,.10);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #toolbar {
+      display: flex;
+      gap: 8px;
+      padding: 12px;
+      background: #1d72b8;
+    }
+
+    #toolbar input {
+      flex: 1;
+      padding: 7px 10px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      outline: none;
+    }
+
+    #toolbar button {
+      padding: 7px 14px;
+      border: none;
+      border-radius: 6px;
+      background: #fff;
+      color: #1d72b8;
+      font-weight: 600;
+      font-size: 14px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    #toolbar button:hover { background: #e8f0fb; }
+
+    #status {
+      font-size: 12px;
+      padding: 4px 14px;
+      color: #fff;
+      background: #155a99;
+      min-height: 22px;
+    }
+
+    #messages {
+      flex: 1;
+      height: 360px;
+      overflow-y: auto;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .msg {
+      padding: 7px 12px;
+      border-radius: 8px;
+      font-size: 14px;
+      line-height: 1.4;
+      max-width: 100%;
+      word-break: break-word;
+    }
+
+    /* Wrapper row controls left/right alignment */
+    .msg.chat {
+      display: flex;
+    }
+
+    .msg.my-message {
+      justify-content: flex-end;
+    }
+
+    .msg.other-message {
+      justify-content: flex-start;
+    }
+
+    /* The bubble inside the row */
+    .bubble {
+      max-width: 72%;
+      padding: 8px 12px;
+      border-radius: 16px;
+      font-size: 14px;
+      line-height: 1.4;
+      word-break: break-word;
+    }
+
+    .my-message .bubble {
+      background: #1d72b8;
+      color: #fff;
+      border-bottom-right-radius: 4px;
+    }
+
+    .other-message .bubble {
+      background: #e8f0fb;
+      color: #1a1a1a;
+      border-bottom-left-radius: 4px;
+    }
+
+    .bubble .author {
+      display: block;
+      font-weight: 700;
+      font-size: 12px;
+      margin-bottom: 2px;
+      opacity: .75;
+    }
+
+    .msg.system {
+      align-self: center;
+      background: none;
+      color: #888;
+      font-size: 12px;
+      font-style: italic;
+    }
+
+    #compose {
+      display: flex;
+      gap: 8px;
+      padding: 12px;
+      border-top: 1px solid #eee;
+    }
+
+    #compose input {
+      flex: 1;
+      padding: 8px 12px;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      font-size: 14px;
+      outline: none;
+    }
+
+    #compose input:focus { border-color: #1d72b8; }
+
+    #compose button {
+      padding: 8px 18px;
+      border: none;
+      border-radius: 8px;
+      background: #1d72b8;
+      color: #fff;
+      font-weight: 600;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    #compose button:hover { background: #155a99; }
+    #compose button:disabled { background: #aac5e0; cursor: default; }
+  </style>
+</head>
+<body>
+<div id="app">
+  <div id="toolbar">
+    <input id="username" placeholder="Username" value="alice" />
+    <input id="room"     placeholder="Room"     value="general" />
+    <button id="connectBtn" onclick="toggleConnect()">Connect</button>
+  </div>
+  <div id="status">Not connected</div>
+  <div id="messages"></div>
+  <div id="compose">
+    <input id="text" placeholder="Type a message…" onkeydown="onEnter(event)" />
+    <button id="sendBtn" onclick="sendMessage()" disabled>Send</button>
+  </div>
+</div>
+
+<script>
+  let ws = null;
+  let currentUser = '';
+
+  function toggleConnect() {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.close();
+      return;
+    }
+    connect();
+  }
+
+  function connect() {
+    const username = document.getElementById('username').value.trim();
+    const room     = document.getElementById('room').value.trim();
+
+    if (!username || !room) {
+      setStatus('Enter a username and room name first.', '#c0392b');
+      return;
+    }
+
+    currentUser = username;
+    ws = new WebSocket('ws://localhost:8080/ws');
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: 'join', room, user: username }));
+      setStatus(`Connected to #${room} as ${username}`, '#27ae60');
+      document.getElementById('connectBtn').textContent = 'Disconnect';
+      document.getElementById('sendBtn').disabled = false;
+    };
+
+    ws.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
+      appendMessage(msg);
+    };
+
+    ws.onclose = () => {
+      setStatus('Disconnected', '#c0392b');
+      document.getElementById('connectBtn').textContent = 'Connect';
+      document.getElementById('sendBtn').disabled = true;
+      ws = null;
+    };
+
+    ws.onerror = () => {
+      setStatus('Connection error', '#c0392b');
+    };
+  }
+
+  function sendMessage() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+    const input = document.getElementById('text');
+    const text  = input.value.trim();
+    if (!text) return;
+
+    ws.send(JSON.stringify({ type: 'chat', text }));
+    input.value = '';
+    input.focus();
+  }
+
+  function onEnter(event) {
+    if (event.key === 'Enter') sendMessage();
+  }
+
+  function appendMessage(msg) {
+    const list = document.getElementById('messages');
+    const el   = document.createElement('div');
+
+    if (msg.type === 'chat') {
+      const isMine = msg.user === currentUser;
+      el.className = `msg chat ${isMine ? 'my-message' : 'other-message'}`;
+      // Own messages don't need an author label; others do.
+      el.innerHTML = `<div class="bubble">${
+        isMine ? '' : `<span class="author">${esc(msg.user)}</span>`
+      }${esc(msg.text)}</div>`;
+    } else if (msg.type === 'user_join') {
+      el.className = 'msg system';
+      el.textContent = `${msg.user} joined the room`;
+    } else if (msg.type === 'user_leave') {
+      el.className = 'msg system';
+      el.textContent = `${msg.user} left the room`;
+    } else {
+      el.className = 'msg system';
+      el.textContent = JSON.stringify(msg);
+    }
+
+    list.appendChild(el);
+    list.scrollTop = list.scrollHeight;
+  }
+
+  function setStatus(text, color) {
+    const el = document.getElementById('status');
+    el.textContent = text;
+    el.style.background = color || '#155a99';
+  }
+
+  function esc(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+</script>
+</body>
+</html>

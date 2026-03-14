@@ -1,7 +1,8 @@
 package models
 
 type Message struct {
-	Sender    string `json:"sender"`
-	Recipient string `json:"recipient"`
-	Text      string `json:"text"`
+	Type string `json:"type"`
+	Room string `json:"room"`
+	User string `json:"user"`
+	Text string `json:"text"`
 }

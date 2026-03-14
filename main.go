@@ -4,26 +4,27 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/gorilla/websocket"
+	"messenger/server"
+	"messenger/storage"
 )
 
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-}
-
 func main() {
+	store, err := storage.NewMessageStore("chat.db")
+	if err != nil {
+		log.Fatalf("open message store: %v", err)
+	}
+	defer store.Close()
+
+	hub := server.NewHub(store)
+	go hub.Run()
+
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			log.Println("Failed to upgrade connection:", err)
-			return
-		}
-		// Handle the WebSocket connection
+		server.ServeWs(hub, store, w, r)
 	})
 
-	log.Println("Starting server on :8080")
-	if err := http.ListenAndServe(":8080", nil); err != nil {
-		log.Fatal("ListenAndServe:", err)
+	addr := ":8080"
+	log.Printf("listening on %s", addr)
+	if err := http.ListenAndServe(addr, nil); err != nil {
+		log.Fatalf("server error: %v", err)
 	}
 }
